@@ -1,20 +1,25 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # <--- 1. IMPORTAR ESTO
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import mysql.connector
+import hashlib
+import jwt
+import datetime
 
-app = FastAPI()
+app = FastAPI(title="SmartBin WMS")
 
-# <--- 2. AGREGAR ESTE BLOQUE DE PERMISOS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # "*" significa que permite conexiones de cualquier lado (útil para desarrollo)
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configuración de BD
+SECRET_KEY = "smartbin_secret_2025"
+security = HTTPBearer()
+
 db_config = {
     "host": "localhost",
     "user": "root",
@@ -22,203 +27,209 @@ db_config = {
     "database": "smartbin_wms"
 }
 
-# --- MODELOS DE DATOS (Las reglas) ---
-# Esto define qué datos necesitamos para crear un producto
+# ── MODELOS ──────────────────────────────────────────────
+class LoginData(BaseModel):
+    usuario: str
+    password: str
+
+class UsuarioNuevo(BaseModel):
+    usuario: str
+    password: str
+    nombre: str
+    rol: str
+
 class ProductoNuevo(BaseModel):
     sku: str
     nombre: str
     categoria_id: int
     precio: float
+    stock_minimo: int = 5
 
-# --- RUTAS ---
+class Transferencia(BaseModel):
+    producto_id: int
+    origen_id: int
+    destino_id: int
+    cantidad: int
 
-@app.get("/")
-def home():
-    return {"mensaje": "Sistema WMS Activo 🟢"}
+# ── AUTH HELPERS ─────────────────────────────────────────
+def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
 
-@app.get("/ubicaciones")
-def ver_ubicaciones():
+def crear_token(uid, usuario, rol):
+    return jwt.encode({
+        "id": uid, "usuario": usuario, "rol": rol,
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    }, SECRET_KEY, algorithm="HS256")
+
+def get_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        conexion = mysql.connector.connect(**db_config)
-        cursor = conexion.cursor(dictionary=True)
-        
-        # SQL AVANZADO: Unimos Ubicaciones + Inventario + Productos
-        sql = """
-            SELECT u.id, u.codigo, u.tipo, 
-                   i.cantidad, 
-                   p.nombre as producto
+        return jwt.decode(creds.credentials, SECRET_KEY, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expirado")
+    except:
+        raise HTTPException(401, "Token invalido")
+
+def solo_admin(user=Depends(get_user)):
+    if user.get("rol") != "admin":
+        raise HTTPException(403, "Solo administradores")
+    return user
+
+def get_conn(): return mysql.connector.connect(**db_config)
+
+# ── RUTAS AUTH ───────────────────────────────────────────
+@app.get("/")
+def home(): return {"mensaje": "SmartBin WMS Activo"}
+
+@app.post("/login")
+def login(data: LoginData):
+    try:
+        conn = get_conn()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM usuarios WHERE usuario=%s AND password=%s",
+                    (data.usuario, hash_pw(data.password)))
+        user = cur.fetchone()
+        conn.close()
+        if not user:
+            raise HTTPException(401, "Usuario o contrasena incorrectos")
+        return {
+            "token": crear_token(user["id"], user["usuario"], user["rol"]),
+            "usuario": user["usuario"],
+            "nombre": user["nombre"],
+            "rol": user["rol"]
+        }
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(500, str(e))
+
+@app.get("/me")
+def get_me(user=Depends(get_user)): return user
+
+@app.get("/usuarios")
+def listar_usuarios(user=Depends(solo_admin)):
+    conn = get_conn(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, usuario, nombre, rol, created_at FROM usuarios")
+    result = cur.fetchall(); conn.close(); return result
+
+@app.post("/usuarios")
+def crear_usuario(data: UsuarioNuevo, user=Depends(solo_admin)):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("INSERT INTO usuarios (usuario, password, nombre, rol) VALUES (%s,%s,%s,%s)",
+                    (data.usuario, hash_pw(data.password), data.nombre, data.rol))
+        conn.commit(); conn.close()
+        return {"mensaje": "Usuario creado"}
+    except Exception as e: raise HTTPException(500, str(e))
+
+# ── RUTAS INVENTARIO ─────────────────────────────────────
+@app.get("/ubicaciones")
+def ver_ubicaciones(user=Depends(get_user)):
+    try:
+        conn = get_conn(); cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT u.id, u.codigo, u.tipo,
+                   COALESCE(i.cantidad, 0) as cantidad,
+                   COALESCE(p.nombre, 'Vacio') as producto,
+                   COALESCE(p.id, null) as producto_id,
+                   COALESCE(pr.stock_minimo, 5) as stock_minimo
             FROM ubicaciones u
             LEFT JOIN inventario i ON u.id = i.ubicacion_id
             LEFT JOIN productos p ON i.producto_id = p.id
-        """
-        
-        cursor.execute(sql)
-        datos = cursor.fetchall()
-        
-        cursor.close()
-        conexion.close()
-        return datos
-    except Exception as e:
-        return {"error": str(e)}
+            LEFT JOIN productos pr ON i.producto_id = pr.id
+        """)
+        datos = cur.fetchall(); conn.close(); return datos
+    except Exception as e: raise HTTPException(500, str(e))
 
-# NUEVA RUTA: Crear Producto (POST)
+@app.get("/productos")
+def ver_productos(user=Depends(get_user)):
+    try:
+        conn = get_conn(); cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT p.id, p.sku, p.nombre, c.nombre as categoria,
+                   COALESCE(SUM(i.cantidad), 0) as stock_total,
+                   p.stock_minimo
+            FROM productos p
+            LEFT JOIN categorias c ON p.categoria_id = c.id
+            LEFT JOIN inventario i ON p.id = i.producto_id
+            GROUP BY p.id, p.sku, p.nombre, c.nombre, p.stock_minimo
+        """)
+        datos = cur.fetchall(); conn.close(); return datos
+    except Exception as e: raise HTTPException(500, str(e))
+
 @app.post("/productos")
-def crear_producto(producto: ProductoNuevo):
+def crear_producto(producto: ProductoNuevo, user=Depends(get_user)):
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        
-        # SQL para insertar
-        sql = "INSERT INTO productos (sku, nombre, categoria_id, precio_compra) VALUES (%s, %s, %s, %s)"
-        valores = (producto.sku, producto.nombre, producto.categoria_id, producto.precio)
-        
-        cursor.execute(sql, valores)
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO productos (sku, nombre, categoria_id, precio_compra, stock_minimo) VALUES (%s,%s,%s,%s,%s)",
+            (producto.sku, producto.nombre, producto.categoria_id, producto.precio, producto.stock_minimo)
+        )
         conn.commit()
-        
-        nuevo_id = cursor.lastrowid # Recuperamos el ID generado
+        nuevo_id = cur.lastrowid
         conn.close()
-        
-        return {"mensaje": "Producto creado ✅", "id": nuevo_id, "producto": producto}
-        
-    except Exception as e:
-        return {"error": str(e)}
-    # --- MODELO PARA MOVER INVENTARIO ---
-class MovimientoStock(BaseModel):
-    producto_id: int
-    ubicacion_id: int  # ¿En qué estante lo vas a poner?
-    cantidad: int
+        return {"id": nuevo_id, "mensaje": "Producto creado"}
+    except Exception as e: raise HTTPException(500, str(e))
 
-# --- RUTA: Ingresar Mercancía (Inbound) ---
-@app.post("/inventario/entrada")
-def entrada_mercancia(movimiento: MovimientoStock):
+@app.get("/categorias")
+def ver_categorias(user=Depends(get_user)):
+    conn = get_conn(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT * FROM categorias")
+    datos = cur.fetchall(); conn.close(); return datos
+
+@app.get("/dashboard")
+def dashboard(user=Depends(get_user)):
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-
-        # 1. Verificar si ya existe ese producto en esa ubicación
-        check_sql = "SELECT cantidad FROM inventario WHERE producto_id = %s AND ubicacion_id = %s"
-        cursor.execute(check_sql, (movimiento.producto_id, movimiento.ubicacion_id))
-        resultado = cursor.fetchone()
-
-        if resultado:
-            # Si ya existe, SUMAMOS la cantidad (Update)
-            nueva_cantidad = resultado[0] + movimiento.cantidad
-            update_sql = "UPDATE inventario SET cantidad = %s WHERE producto_id = %s AND ubicacion_id = %s"
-            cursor.execute(update_sql, (nueva_cantidad, movimiento.producto_id, movimiento.ubicacion_id))
-            mensaje = "Stock actualizado (sumado) 🔄"
-        else:
-            # Si no existe, CREAMOS el registro (Insert)
-            insert_sql = "INSERT INTO inventario (producto_id, ubicacion_id, cantidad) VALUES (%s, %s, %s)"
-            cursor.execute(insert_sql, (movimiento.producto_id, movimiento.ubicacion_id, movimiento.cantidad))
-            mensaje = "Nuevo stock registrado en ubicación 📦"
-
-        conn.commit()
+        conn = get_conn(); cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT COUNT(*) as total FROM productos")
+        total_productos = cur.fetchone()["total"]
+        cur.execute("SELECT COUNT(*) as total FROM ubicaciones")
+        total_ubicaciones = cur.fetchone()["total"]
+        cur.execute("SELECT COUNT(*) as total FROM usuarios")
+        total_usuarios = cur.fetchone()["total"]
+        cur.execute("""
+            SELECT p.nombre, p.stock_minimo, COALESCE(SUM(i.cantidad),0) as stock_total
+            FROM productos p
+            LEFT JOIN inventario i ON p.id = i.producto_id
+            GROUP BY p.id, p.nombre, p.stock_minimo
+            HAVING stock_total <= p.stock_minimo
+        """)
+        alertas = cur.fetchall()
+        cur.execute("""
+            SELECT c.nombre as categoria, COALESCE(SUM(i.cantidad),0) as total
+            FROM categorias c
+            LEFT JOIN productos p ON c.id = p.categoria_id
+            LEFT JOIN inventario i ON p.id = i.producto_id
+            GROUP BY c.id, c.nombre
+        """)
+        por_categoria = cur.fetchall()
         conn.close()
-        
-        return {"mensaje": mensaje, "datos": movimiento}
+        return {
+            "total_productos": total_productos,
+            "total_ubicaciones": total_ubicaciones,
+            "total_usuarios": total_usuarios,
+            "alertas_stock": alertas,
+            "stock_por_categoria": por_categoria
+        }
+    except Exception as e: raise HTTPException(500, str(e))
 
-    except Exception as e:
-        return {"error": str(e)}
-    # --- RUTA: Sacar Mercancía (Picking / Outbound) ---
-@app.post("/inventario/salida")
-def salida_mercancia(movimiento: MovimientoStock):
+@app.post("/transferencias")
+def transferir(transf: Transferencia, user=Depends(get_user)):
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-
-        # 1. Consultar cuánto hay ACTUALMENTE
-        check_sql = "SELECT cantidad FROM inventario WHERE producto_id = %s AND ubicacion_id = %s"
-        cursor.execute(check_sql, (movimiento.producto_id, movimiento.ubicacion_id))
-        resultado = cursor.fetchone()
-
-        # Validación 1: ¿Existe el producto ahí?
-        if not resultado:
-            conn.close()
-            return {"error": "❌ No se encontró ese producto en esa ubicación."}
-        
-        stock_actual = resultado[0]
-
-        # Validación 2: ¿Hay suficiente cantidad?
-        if stock_actual < movimiento.cantidad:
-            conn.close()
-            return {
-                "error": "⚠️ Stock insuficiente", 
-                "disponible": stock_actual, 
-                "solicitado": movimiento.cantidad
-            }
-
-        # 2. Si pasa las pruebas, restamos
-        nuevo_stock = stock_actual - movimiento.cantidad
-        
-        if nuevo_stock == 0:
-            # Opción A: Si queda en 0, borramos el registro para que no ocupe espacio
-            update_sql = "DELETE FROM inventario WHERE producto_id = %s AND ubicacion_id = %s"
-            cursor.execute(update_sql, (movimiento.producto_id, movimiento.ubicacion_id))
-            mensaje = "Producto agotado en esta ubicación (Fila eliminada) 🗑️"
-        else:
-            # Opción B: Actualizamos la resta
-            update_sql = "UPDATE inventario SET cantidad = %s WHERE producto_id = %s AND ubicacion_id = %s"
-            cursor.execute(update_sql, (nuevo_stock, movimiento.producto_id, movimiento.ubicacion_id))
-            mensaje = f"Salida exitosa. Quedan {nuevo_stock} unidades 📉"
-
-        conn.commit()
-        conn.close()
-        
-        return {"mensaje": mensaje, "datos": movimiento}
-
-    except Exception as e:
-        return {"error": str(e)}
-    # --- MODELO PARA MOVER ENTRE UBICACIONES ---
-class Transferencia(BaseModel):
-    origen_id: int    # Desde dónde sale (ej: A-01)
-    destino_id: int   # A dónde va (ej: Z-99)
-    producto_id: int
-    cantidad: int
-
-# --- RUTA: Reubicación (Transferencia Interna) ---
-@app.post("/inventario/mover")
-def mover_interno(transf: Transferencia):
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-
-        # 1. VERIFICAR SI HAY STOCK EN EL ORIGEN
-        check_sql = "SELECT cantidad FROM inventario WHERE producto_id = %s AND ubicacion_id = %s"
-        cursor.execute(check_sql, (transf.producto_id, transf.origen_id))
-        origen = cursor.fetchone()
-
-        if not origen or origen[0] < transf.cantidad:
-            conn.close()
-            # Retornamos error 400 (Bad Request)
-            raise HTTPException(status_code=400, detail="❌ Stock insuficiente en el origen")
-
-        # 2. RESTAR DEL ORIGEN (Outbound interno)
-        nuevo_stock_origen = origen[0] - transf.cantidad
-        if nuevo_stock_origen == 0:
-            cursor.execute("DELETE FROM inventario WHERE producto_id = %s AND ubicacion_id = %s", 
-                           (transf.producto_id, transf.origen_id))
-        else:
-            cursor.execute("UPDATE inventario SET cantidad = %s WHERE producto_id = %s AND ubicacion_id = %s", 
-                           (nuevo_stock_origen, transf.producto_id, transf.origen_id))
-
-        # 3. SUMAR AL DESTINO (Inbound interno)
-        # Revisamos si ya existe en el destino
-        cursor.execute(check_sql, (transf.producto_id, transf.destino_id))
-        destino = cursor.fetchone()
-
+        conn = get_conn(); cur = conn.cursor(dictionary=True)
+        check = "SELECT cantidad FROM inventario WHERE producto_id=%s AND ubicacion_id=%s"
+        cur.execute(check, (transf.producto_id, transf.origen_id))
+        origen = cur.fetchone()
+        if not origen or origen["cantidad"] < transf.cantidad:
+            raise HTTPException(400, "Stock insuficiente en origen")
+        nuevo_stock = origen["cantidad"] - transf.cantidad
+        cur.execute("UPDATE inventario SET cantidad=%s WHERE producto_id=%s AND ubicacion_id=%s",
+                    (nuevo_stock, transf.producto_id, transf.origen_id))
+        cur.execute(check, (transf.producto_id, transf.destino_id))
+        destino = cur.fetchone()
         if destino:
-            # Si ya existe, sumamos
-            cursor.execute("UPDATE inventario SET cantidad = cantidad + %s WHERE producto_id = %s AND ubicacion_id = %s", 
-                           (transf.cantidad, transf.producto_id, transf.destino_id))
+            cur.execute("UPDATE inventario SET cantidad=cantidad+%s WHERE producto_id=%s AND ubicacion_id=%s",
+                        (transf.cantidad, transf.producto_id, transf.destino_id))
         else:
-            # Si no existe, creamos
-            cursor.execute("INSERT INTO inventario (producto_id, ubicacion_id, cantidad) VALUES (%s, %s, %s)", 
-                           (transf.producto_id, transf.destino_id, transf.cantidad))
-
-        conn.commit()
-        conn.close()
-        
-        return {"mensaje": "Reubicación exitosa 🚚💨"}
-
-    except Exception as e:
-        return {"error": str(e)}
+            cur.execute("INSERT INTO inventario (producto_id, ubicacion_id, cantidad) VALUES (%s,%s,%s)",
+                        (transf.producto_id, transf.destino_id, transf.cantidad))
+        conn.commit(); conn.close()
+        return {"mensaje": "Transferencia exitosa"}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(500, str(e))
