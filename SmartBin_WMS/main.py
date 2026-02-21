@@ -233,3 +233,47 @@ def transferir(transf: Transferencia, user=Depends(get_user)):
         return {"mensaje": "Transferencia exitosa"}
     except HTTPException: raise
     except Exception as e: raise HTTPException(500, str(e))
+    # Agregar estas rutas al main.py despues de POST /productos
+
+class ProductoEditar(BaseModel):
+    sku: str
+    nombre: str
+    categoria_id: int
+    precio: float
+    stock_minimo: int
+
+class AjusteStock(BaseModel):
+    cantidad: int
+
+@app.put("/productos/{producto_id}")
+def editar_producto(producto_id: int, producto: ProductoEditar, user=Depends(solo_admin)):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            UPDATE productos SET sku=%s, nombre=%s, categoria_id=%s, precio_compra=%s, stock_minimo=%s
+            WHERE id=%s
+        """, (producto.sku, producto.nombre, producto.categoria_id, producto.precio, producto.stock_minimo, producto_id))
+        conn.commit(); conn.close()
+        return {"mensaje": "Producto actualizado"}
+    except Exception as e: raise HTTPException(500, str(e))
+
+@app.patch("/productos/{producto_id}/stock")
+def ajustar_stock(producto_id: int, ajuste: AjusteStock, user=Depends(solo_admin)):
+    try:
+        conn = get_conn(); cur = conn.cursor(dictionary=True)
+        # Obtener ubicacion principal del producto
+        cur.execute("SELECT ubicacion_id FROM inventario WHERE producto_id=%s LIMIT 1", (producto_id,))
+        inv = cur.fetchone()
+        if inv:
+            cur.execute("UPDATE inventario SET cantidad=%s WHERE producto_id=%s AND ubicacion_id=%s",
+                        (ajuste.cantidad, producto_id, inv["ubicacion_id"]))
+        else:
+            # Si no tiene ubicacion, ponerlo en la primera disponible
+            cur.execute("SELECT id FROM ubicaciones LIMIT 1")
+            ubi = cur.fetchone()
+            if ubi:
+                cur.execute("INSERT INTO inventario (producto_id, ubicacion_id, cantidad) VALUES (%s,%s,%s)",
+                            (producto_id, ubi["id"], ajuste.cantidad))
+        conn.commit(); conn.close()
+        return {"mensaje": "Stock actualizado"}
+    except Exception as e: raise HTTPException(500, str(e))
