@@ -45,6 +45,16 @@ class ProductoNuevo(BaseModel):
     precio: float
     stock_minimo: int = 5
 
+class ProductoEditar(BaseModel):
+    sku: str
+    nombre: str
+    categoria_id: int
+    precio: float
+    stock_minimo: int
+
+class AjusteStock(BaseModel):
+    cantidad: int
+
 class Transferencia(BaseModel):
     producto_id: int
     origen_id: int
@@ -75,10 +85,11 @@ def solo_admin(user=Depends(get_user)):
 
 def get_conn(): return mysql.connector.connect(**db_config)
 
-# ── RUTAS AUTH ───────────────────────────────────────────
+# ── RUTAS BASE ───────────────────────────────────────────
 @app.get("/")
 def home(): return {"mensaje": "SmartBin WMS Activo"}
 
+# ── RUTAS AUTH ───────────────────────────────────────────
 @app.post("/login")
 def login(data: LoginData):
     try:
@@ -142,14 +153,14 @@ def ver_productos(user=Depends(get_user)):
     try:
         conn = get_conn(); cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT p.id, p.sku, p.nombre, c.nombre as categoria,
-                   COALESCE(SUM(i.cantidad), 0) as stock_total,
-                   p.stock_minimo
-            FROM productos p
-            LEFT JOIN categorias c ON p.categoria_id = c.id
-            LEFT JOIN inventario i ON p.id = i.producto_id
-            GROUP BY p.id, p.sku, p.nombre, c.nombre, p.stock_minimo
-        """)
+    SELECT p.id, p.sku, p.nombre, p.categoria_id, c.nombre as categoria,
+           COALESCE(SUM(i.cantidad), 0) as stock_total,
+           p.stock_minimo
+    FROM productos p
+    LEFT JOIN categorias c ON p.categoria_id = c.id
+    LEFT JOIN inventario i ON p.id = i.producto_id
+    GROUP BY p.id, p.sku, p.nombre, p.categoria_id, c.nombre, p.stock_minimo
+""")
         datos = cur.fetchall(); conn.close(); return datos
     except Exception as e: raise HTTPException(500, str(e))
 
@@ -165,6 +176,37 @@ def crear_producto(producto: ProductoNuevo, user=Depends(get_user)):
         nuevo_id = cur.lastrowid
         conn.close()
         return {"id": nuevo_id, "mensaje": "Producto creado"}
+    except Exception as e: raise HTTPException(500, str(e))
+
+@app.put("/productos/{producto_id}")
+def editar_producto(producto_id: int, producto: ProductoEditar, user=Depends(solo_admin)):
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            UPDATE productos SET sku=%s, nombre=%s, categoria_id=%s, precio_compra=%s, stock_minimo=%s
+            WHERE id=%s
+        """, (producto.sku, producto.nombre, producto.categoria_id, producto.precio, producto.stock_minimo, producto_id))
+        conn.commit(); conn.close()
+        return {"mensaje": "Producto actualizado"}
+    except Exception as e: raise HTTPException(500, str(e))
+
+@app.patch("/productos/{producto_id}/stock")
+def ajustar_stock(producto_id: int, ajuste: AjusteStock, user=Depends(solo_admin)):
+    try:
+        conn = get_conn(); cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT ubicacion_id FROM inventario WHERE producto_id=%s LIMIT 1", (producto_id,))
+        inv = cur.fetchone()
+        if inv:
+            cur.execute("UPDATE inventario SET cantidad=%s WHERE producto_id=%s AND ubicacion_id=%s",
+                        (ajuste.cantidad, producto_id, inv["ubicacion_id"]))
+        else:
+            cur.execute("SELECT id FROM ubicaciones LIMIT 1")
+            ubi = cur.fetchone()
+            if ubi:
+                cur.execute("INSERT INTO inventario (producto_id, ubicacion_id, cantidad) VALUES (%s,%s,%s)",
+                            (producto_id, ubi["id"], ajuste.cantidad))
+        conn.commit(); conn.close()
+        return {"mensaje": "Stock actualizado"}
     except Exception as e: raise HTTPException(500, str(e))
 
 @app.get("/categorias")
@@ -232,48 +274,4 @@ def transferir(transf: Transferencia, user=Depends(get_user)):
         conn.commit(); conn.close()
         return {"mensaje": "Transferencia exitosa"}
     except HTTPException: raise
-    except Exception as e: raise HTTPException(500, str(e))
-    # Agregar estas rutas al main.py despues de POST /productos
-
-class ProductoEditar(BaseModel):
-    sku: str
-    nombre: str
-    categoria_id: int
-    precio: float
-    stock_minimo: int
-
-class AjusteStock(BaseModel):
-    cantidad: int
-
-@app.put("/productos/{producto_id}")
-def editar_producto(producto_id: int, producto: ProductoEditar, user=Depends(solo_admin)):
-    try:
-        conn = get_conn(); cur = conn.cursor()
-        cur.execute("""
-            UPDATE productos SET sku=%s, nombre=%s, categoria_id=%s, precio_compra=%s, stock_minimo=%s
-            WHERE id=%s
-        """, (producto.sku, producto.nombre, producto.categoria_id, producto.precio, producto.stock_minimo, producto_id))
-        conn.commit(); conn.close()
-        return {"mensaje": "Producto actualizado"}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@app.patch("/productos/{producto_id}/stock")
-def ajustar_stock(producto_id: int, ajuste: AjusteStock, user=Depends(solo_admin)):
-    try:
-        conn = get_conn(); cur = conn.cursor(dictionary=True)
-        # Obtener ubicacion principal del producto
-        cur.execute("SELECT ubicacion_id FROM inventario WHERE producto_id=%s LIMIT 1", (producto_id,))
-        inv = cur.fetchone()
-        if inv:
-            cur.execute("UPDATE inventario SET cantidad=%s WHERE producto_id=%s AND ubicacion_id=%s",
-                        (ajuste.cantidad, producto_id, inv["ubicacion_id"]))
-        else:
-            # Si no tiene ubicacion, ponerlo en la primera disponible
-            cur.execute("SELECT id FROM ubicaciones LIMIT 1")
-            ubi = cur.fetchone()
-            if ubi:
-                cur.execute("INSERT INTO inventario (producto_id, ubicacion_id, cantidad) VALUES (%s,%s,%s)",
-                            (producto_id, ubi["id"], ajuste.cantidad))
-        conn.commit(); conn.close()
-        return {"mensaje": "Stock actualizado"}
     except Exception as e: raise HTTPException(500, str(e))
