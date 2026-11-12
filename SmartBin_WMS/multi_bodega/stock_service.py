@@ -1,6 +1,10 @@
 """
 SmartBin WMS - Servicio de stock sin condiciones de carrera.
 
+DISENO DE REFERENCIA: no lo usa la aplicacion. El descuento atomico, el orden
+de bloqueo, el libro mayor y el multi-bodega ya estan integrados en ../main.py;
+aqui queda lo pendiente: idempotencia, bloqueo optimista y stock reservado.
+
 Estrategia de concurrencia (una por caso de uso, no "una para todo"):
 
   * Salidas y transferencias -> bloqueo PESIMISTA implicito:

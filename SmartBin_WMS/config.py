@@ -20,8 +20,15 @@ def _requerida(nombre: str) -> str:
     return valor
 
 
-SECRET_KEY = _requerida("SECRET_KEY")
-if len(SECRET_KEY) < 32:
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY:
+    # Sin clave configurada se genera una al azar en cada arranque: es seguro
+    # y no exige configurar nada para una demo, pero las sesiones se cierran
+    # cada vez que el servidor reinicia. Para evitarlo, define SECRET_KEY en .env
+    import secrets
+    SECRET_KEY = secrets.token_urlsafe(48)
+    print("AVISO: SECRET_KEY no definida; se usa una temporal (las sesiones se cierran al reiniciar).")
+elif len(SECRET_KEY) < 32:
     raise RuntimeError(
         "SECRET_KEY debe tener al menos 32 caracteres. Genera una con: "
         'python -c "import secrets; print(secrets.token_urlsafe(48))"'

@@ -28,7 +28,7 @@ import main  # noqa: E402
 from security import hash_password, necesita_actualizar, verificar  # noqa: E402
 
 ESQUEMA = (RAIZ.parent / "database" / "schema.sql").read_text(encoding="utf-8")
-TABLAS = ["inventario", "productos", "categorias", "ubicaciones", "usuarios"]
+TABLAS = ["inventario", "movimientos", "productos", "categorias", "ubicaciones", "bodegas", "usuarios"]
 SHA256_ADMIN123 = "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9"
 
 
@@ -56,7 +56,9 @@ def base_limpia():
     sql("INSERT INTO usuarios (usuario,password,nombre,rol) VALUES (%s,%s,'Admin','admin'),(%s,%s,'Op','operario')",
         ("admin", hash_password("admin123", iteraciones=1000), "op", hash_password("operario123", iteraciones=1000)))
     sql("INSERT INTO categorias (id,nombre) VALUES (1,'General')")
-    sql("INSERT INTO ubicaciones (id,codigo,tipo) VALUES (1,'A-01','Picking'),(2,'A-02','Picking'),(3,'Z-01','Reserva')")
+    sql("INSERT INTO bodegas (id,codigo,nombre) VALUES (1,'PRINCIPAL','Principal'),(2,'NORTE','Norte')")
+    sql("INSERT INTO ubicaciones (id,bodega_id,codigo,tipo) VALUES (1,1,'A-01','Picking'),(2,1,'A-02','Picking'),(3,2,'A-01','Reserva')")
+    main._fallos_login.clear()
     sql("INSERT INTO productos (id,sku,nombre,categoria_id,precio_compra,stock_minimo) VALUES (1,'SKU-1','Taladro',1,150.50,5)")
     sql("INSERT INTO inventario (ubicacion_id,producto_id,cantidad) VALUES (1,1,100)")
 
@@ -200,3 +202,103 @@ def test_ajuste_deja_el_total_pedido(api):
     assert ajustar(-1).status_code == 422
     assert api.patch("/productos/999/stock", headers=h, json={"cantidad": 1}).status_code == 404
     assert api.patch("/productos/1/stock", headers=token(api, "op", "operario123"), json={"cantidad": 1}).status_code == 403
+
+
+# ── Bodegas, entradas, salidas e historial ───────────────
+def movimientos(**filtro):
+    donde = " AND ".join(f"{k}=%s" for k in filtro) or "1=1"
+    return sql(f"SELECT tipo, bodega_id, ubicacion_id, delta, saldo, operacion_id, usuario_id FROM movimientos WHERE {donde} ORDER BY id", tuple(filtro.values()))
+
+
+def test_bodegas_y_ubicaciones(api):
+    h, op = token(api), token(api, "op", "operario123")
+    assert api.post("/bodegas", headers=op, json={"codigo": "SUR", "nombre": "Sur"}).status_code == 403
+    r = api.post("/bodegas", headers=h, json={"codigo": "sur", "nombre": "Bodega Sur"})
+    assert r.status_code == 200
+    sur = r.json()["id"]
+    assert api.post("/bodegas", headers=h, json={"codigo": "SUR", "nombre": "Otra"}).status_code == 409
+    # el mismo codigo de ubicacion puede existir en otra bodega, no en la misma
+    nueva = {"bodega_id": sur, "codigo": "A-01", "tipo": "Picking"}
+    assert api.post("/ubicaciones", headers=h, json=nueva).status_code == 200
+    assert api.post("/ubicaciones", headers=h, json=nueva).status_code == 409
+    assert api.post("/ubicaciones", headers=h, json={**nueva, "bodega_id": 999}).status_code == 404
+    bodegas = {b["codigo"]: b for b in api.get("/bodegas", headers=h).json()}
+    assert int(bodegas["PRINCIPAL"]["unidades"]) == 100 and bodegas["SUR"]["ubicaciones"] == 1
+    assert {u["bodega"] for u in api.get("/ubicaciones", headers=h, params={"bodega_id": 2}).json()} == {"NORTE"}
+
+
+def test_entradas_salidas_y_libro_mayor(api):
+    h = token(api)
+    mov = lambda ruta, ubi, n: api.post(ruta, headers=h, json={"producto_id": 1, "ubicacion_id": ubi, "cantidad": n, "referencia": "REM-1"})
+    assert mov("/entradas", 3, 50).status_code == 200 and stock(3) == 50
+    assert mov("/salidas", 3, 20).status_code == 200 and stock(3) == 30
+    assert mov("/salidas", 3, 31).status_code == 400 and stock(3) == 30
+    assert mov("/salidas", 3, 0).status_code == 422
+    assert mov("/entradas", 999, 1).status_code == 404
+    assert transferir(api, h, 1, 3, 10).status_code == 200          # entre bodegas
+    assert api.patch("/productos/1/stock", headers=h, json={"cantidad": 125}).status_code == 200
+
+    filas = movimientos()
+    assert [(f["tipo"], f["bodega_id"], f["delta"], f["saldo"]) for f in filas] == [
+        ("ENTRADA", 2, 50, 50), ("SALIDA", 2, -20, 30),
+        ("TRANSFERENCIA", 1, -10, 90), ("TRANSFERENCIA", 2, 10, 40),
+        ("AJUSTE", 1, -5, 85),
+    ]
+    assert filas[2]["operacion_id"] == filas[3]["operacion_id"] and filas[0]["usuario_id"] is not None
+    # El libro mayor cuadra con el saldo: stock inicial + suma de deltas
+    assert 100 + sum(f["delta"] for f in filas) == stock(1) + stock(2) + stock(3) == 125
+
+    historial = api.get("/movimientos", headers=h, params={"tipo": "SALIDA"}).json()
+    assert len(historial) == 1 and historial[0]["bodega"] == "NORTE" and historial[0]["usuario"] == "Admin"
+    assert len(api.get("/movimientos", headers=h, params={"bodega_id": 1, "limite": 1}).json()) == 1
+    assert api.get("/movimientos", headers=h, params={"tipo": "OTRO"}).status_code == 422
+
+
+def test_salidas_concurrentes_no_sobrevenden(api):
+    h = token(api)
+    codigos, barrera = [], threading.Barrier(40)
+
+    def pedir():
+        barrera.wait()
+        codigos.append(api.post("/salidas", headers=h, json={"producto_id": 1, "ubicacion_id": 1, "cantidad": 5}).status_code)
+
+    hilos = [threading.Thread(target=pedir) for _ in range(40)]
+    [t.start() for t in hilos]
+    [t.join() for t in hilos]
+    assert codigos.count(200) == 20 and codigos.count(400) == 20, codigos
+    assert stock(1) == 0 and len(movimientos(tipo="SALIDA")) == 20
+
+
+# ── Reorden ──────────────────────────────────────────────
+def test_reorden_desde_salidas_historicas(api):
+    import reorden
+    # 60 dias vendiendo 10 diarias: demanda 10, sin variabilidad => punto = 10 * 7
+    calculo = reorden.calcular([10.0] * 60, lead_time_dias=7, nivel_servicio=0.95, stock=50)
+    assert calculo["demanda_diaria"] == 10 and calculo["stock_seguridad"] == 0
+    assert calculo["punto_reorden"] == 70 and calculo["requiere_reorden"] and calculo["cantidad_sugerida"] == 90
+    assert not reorden.calcular([10.0] * 60, lead_time_dias=7, nivel_servicio=0.95, stock=500)["requiere_reorden"]
+    assert reorden.calcular([1.0], lead_time_dias=7, nivel_servicio=0.95)["baja_confianza"]
+
+    h = token(api)
+    sql("INSERT INTO movimientos (operacion_id,tipo,bodega_id,ubicacion_id,producto_id,delta,saldo,created_at) "
+        "SELECT UUID(),'SALIDA',1,1,1,-10,0, NOW() - INTERVAL n DAY FROM "
+        "(SELECT a.n + b.n*10 AS n FROM (SELECT 0 n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 "
+        "UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) a, "
+        "(SELECT 0 n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) b) dias")
+    filas = api.get("/reorden", headers=h).json()
+    assert len(filas) == 1
+    f = filas[0]
+    assert (f["bodega"], f["sku"], f["stock"], f["dias_historia"]) == ("PRINCIPAL", "SKU-1", 100, 60)
+    assert f["demanda_diaria"] == 10 and f["punto_reorden"] == 70 and not f["requiere_reorden"]
+    assert api.get("/reorden", headers=h, params={"bodega_id": 2}).json() == []
+
+
+# ── Limite de intentos de login ──────────────────────────
+def test_login_se_bloquea_tras_cinco_fallos(api):
+    mala = {"usuario": "admin", "password": "incorrecta"}
+    assert [api.post("/login", json=mala).status_code for _ in range(5)] == [401] * 5
+    r = api.post("/login", json={"usuario": "admin", "password": "admin123"})
+    assert r.status_code == 429 and "Retry-After" in r.headers          # ni con la clave correcta
+    token(api, "op", "operario123")                                     # otro usuario no se ve afectado
+    main._fallos_login.clear()
+    token(api)

@@ -1,4 +1,5 @@
 -- =====================================================================
+-- DISENO DE REFERENCIA (no lo usa la aplicacion; ver database/schema.sql)
 -- SmartBin WMS - Esquema multi-bodega (MySQL 8.0.16+, InnoDB, utf8mb4)
 -- Principios:
 --   1. `stock` es el saldo actual; `stock_movements` es el libro mayor
@@ -136,7 +137,8 @@ CREATE TABLE stock_movements (
 -- RANGE sobre created_at (exige quitar las FK e incluir created_at en la PK).
 
 -- ---------------------------------------------------------------------
--- Resultado del modulo de analitica (lo sobreescribe el job nocturno).
+-- Resultado de la analitica de reorden, si se quisiera guardar (hoy la
+-- aplicacion lo calcula al vuelo en GET /reorden).
 -- ---------------------------------------------------------------------
 CREATE TABLE reorder_policies (
     warehouse_id      INT UNSIGNED    NOT NULL,
