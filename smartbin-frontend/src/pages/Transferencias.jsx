@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import api from '../api'
+import { mensajeError } from '../utils'
 
 export default function Transferencias() {
   const [productos, setProductos] = useState([])
@@ -12,8 +13,14 @@ export default function Transferencias() {
   useEffect(() => {
     Promise.all([api.get('/productos'), api.get('/ubicaciones')]).then(([p, u]) => {
       setProductos(p.data); setUbicaciones(u.data)
-    })
+    }).catch(err => setError(mensajeError(err, 'No se pudieron cargar los datos')))
   }, [])
+
+  // /ubicaciones devuelve una fila por (ubicacion, producto)
+  const productoId = parseInt(form.producto_id)
+  const origenes = ubicaciones.filter(u => u.cantidad > 0 && (!productoId || u.producto_id === productoId))
+  const destinos = [...new Map(ubicaciones.map(u => [u.id, u])).values()]
+    .filter(u => u.id !== parseInt(form.origen_id))
 
   async function handleSubmit(e) {
     e.preventDefault(); setMsg(''); setError(''); setLoading(true)
@@ -28,7 +35,7 @@ export default function Transferencias() {
       setForm({ producto_id: '', origen_id: '', destino_id: '', cantidad: 1 })
       const u = await api.get('/ubicaciones')
       setUbicaciones(u.data)
-    } catch (err) { setError(err.response?.data?.detail || 'Error en la transferencia') }
+    } catch (err) { setError(mensajeError(err, 'Error en la transferencia')) }
     finally { setLoading(false) }
   }
 
@@ -46,7 +53,7 @@ export default function Transferencias() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">Producto</label>
-              <select value={form.producto_id} onChange={e => setForm({...form, producto_id: e.target.value})}
+              <select required value={form.producto_id} onChange={e => setForm({...form, producto_id: e.target.value, origen_id: ''})}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-emerald-500">
                 <option value="">Seleccionar producto...</option>
                 {productos.map(p => <option key={p.id} value={p.id}>{p.nombre} (Stock: {p.stock_total})</option>)}
@@ -55,24 +62,24 @@ export default function Transferencias() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">Origen</label>
-                <select value={form.origen_id} onChange={e => setForm({...form, origen_id: e.target.value})}
+                <select required value={form.origen_id} onChange={e => setForm({...form, origen_id: e.target.value})}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-emerald-500">
                   <option value="">Origen...</option>
-                  {ubicaciones.filter(u => u.cantidad > 0).map(u => <option key={u.id} value={u.id}>{u.codigo} ({u.cantidad})</option>)}
+                  {origenes.map(u => <option key={`${u.id}-${u.producto_id}`} value={u.id}>{u.codigo} — {u.producto} ({u.cantidad})</option>)}
                 </select>
               </div>
               <div>
                 <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">Destino</label>
-                <select value={form.destino_id} onChange={e => setForm({...form, destino_id: e.target.value})}
+                <select required value={form.destino_id} onChange={e => setForm({...form, destino_id: e.target.value})}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-emerald-500">
                   <option value="">Destino...</option>
-                  {ubicaciones.filter(u => u.id !== parseInt(form.origen_id)).map(u => <option key={u.id} value={u.id}>{u.codigo} - {u.tipo}</option>)}
+                  {destinos.map(u => <option key={u.id} value={u.id}>{u.codigo} - {u.tipo}</option>)}
                 </select>
               </div>
             </div>
             <div>
               <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">Cantidad</label>
-              <input type="number" min="1" value={form.cantidad} onChange={e => setForm({...form, cantidad: e.target.value})}
+              <input type="number" min="1" step="1" required value={form.cantidad} onChange={e => setForm({...form, cantidad: e.target.value})}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-emerald-500"
               />
             </div>
@@ -90,7 +97,7 @@ export default function Transferencias() {
           <h2 className="text-sm font-semibold text-white mb-4">Estado Actual de Ubicaciones</h2>
           <div className="space-y-2 max-h-96 overflow-y-auto">
             {ubicaciones.map(u => (
-              <div key={u.id} className="flex items-center justify-between px-4 py-2.5 bg-gray-800 rounded-lg">
+              <div key={`${u.id}-${u.producto_id}`} className="flex items-center justify-between px-4 py-2.5 bg-gray-800 rounded-lg">
                 <div>
                   <span className="font-mono text-sm font-bold text-white">{u.codigo}</span>
                   <span className="text-xs text-gray-500 ml-2">{u.tipo}</span>

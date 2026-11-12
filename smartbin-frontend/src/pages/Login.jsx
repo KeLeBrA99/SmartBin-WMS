@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../api'
+import { mensajeError } from '../utils'
 
 export default function Login() {
   const [form, setForm] = useState({ usuario: '', password: '' })
@@ -18,7 +19,7 @@ export default function Login() {
       login({ usuario: data.usuario, nombre: data.nombre, rol: data.rol }, data.token)
       navigate('/dashboard')
     } catch (err) {
-      setError(err.response?.data?.detail || 'Error al iniciar sesion')
+      setError(mensajeError(err, 'Error al iniciar sesion'))
     } finally { setLoading(false) }
   }
 
@@ -46,6 +47,8 @@ export default function Login() {
                 value={form.usuario}
                 onChange={e => setForm({...form, usuario: e.target.value})}
                 placeholder="admin"
+                required
+                autoComplete="username"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
@@ -56,6 +59,8 @@ export default function Login() {
                 value={form.password}
                 onChange={e => setForm({...form, password: e.target.value})}
                 placeholder="••••••••"
+                required
+                autoComplete="current-password"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
@@ -71,6 +76,8 @@ export default function Login() {
             </button>
           </form>
 
+          {/* Credenciales de demostracion: solo visibles en desarrollo */}
+          {import.meta.env.DEV && (
           <div className="mt-6 pt-6 border-t border-gray-800">
             <p className="text-xs text-gray-500 text-center">Usuarios por defecto</p>
             <div className="grid grid-cols-2 gap-2 mt-2">
@@ -84,6 +91,7 @@ export default function Login() {
               </div>
             </div>
           </div>
+          )}
         </div>
       </div>
     </div>

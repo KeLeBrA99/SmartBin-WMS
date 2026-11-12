@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import api from '../api'
+import { escapeHtml, abrirReporte, mensajeError } from '../utils'
 
 function generarPDF(ubicaciones) {
   const fecha = new Date().toLocaleDateString('es-CO', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -10,9 +11,9 @@ function generarPDF(ubicaciones) {
     const color  = u.cantidad === 0 ? '#6b7280' : u.cantidad <= (u.stock_minimo || 5) ? '#ef4444' : '#10b981'
     return `
       <tr style="border-bottom:1px solid #f3f4f6">
-        <td style="padding:10px 12px;font-family:monospace;font-weight:bold;color:#059669">${u.codigo}</td>
-        <td style="padding:10px 12px;color:#374151">${u.tipo}</td>
-        <td style="padding:10px 12px;color:#374151">${u.producto}</td>
+        <td style="padding:10px 12px;font-family:monospace;font-weight:bold;color:#059669">${escapeHtml(u.codigo)}</td>
+        <td style="padding:10px 12px;color:#374151">${escapeHtml(u.tipo)}</td>
+        <td style="padding:10px 12px;color:#374151">${escapeHtml(u.producto)}</td>
         <td style="padding:10px 12px;font-weight:bold;font-size:1.1em">${u.cantidad}</td>
         <td style="padding:10px 12px"><span style="background:${color}20;color:${color};padding:2px 10px;border-radius:20px;font-size:0.8em;font-weight:600">${estado}</span></td>
       </tr>`
@@ -98,18 +99,24 @@ function generarPDF(ubicaciones) {
     </body>
     </html>`
 
-  const ventana = window.open('', '_blank')
-  ventana.document.write(html)
-  ventana.document.close()
+  abrirReporte(html)
 }
 
 export default function Inventario() {
   const [ubicaciones, setUbicaciones] = useState([])
   const [loading, setLoading] = useState(true)
   const [busqueda, setBusqueda] = useState('')
+  const [error, setError] = useState('')
+
+  function cargar() {
+    return api.get('/ubicaciones')
+      .then(r => { setUbicaciones(r.data); setError('') })
+      .catch(err => setError(mensajeError(err, 'No se pudo cargar el inventario')))
+      .finally(() => setLoading(false))
+  }
 
   useEffect(() => {
-    api.get('/ubicaciones').then(r => { setUbicaciones(r.data); setLoading(false) })
+    cargar()
   }, [])
 
   const filtradas = ubicaciones.filter(u =>
@@ -141,13 +148,15 @@ export default function Inventario() {
             📄 <span className="hidden sm:inline">Exportar PDF</span>
           </button>
           <button
-            onClick={() => api.get('/ubicaciones').then(r => setUbicaciones(r.data))}
+            onClick={cargar}
             className="text-sm bg-gray-800 border border-gray-700 text-gray-300 px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
           >
             🔄
           </button>
         </div>
       </div>
+
+      {error && <p className="text-red-400 text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-4 py-2">{error}</p>}
 
       <input
         type="text"
@@ -159,7 +168,7 @@ export default function Inventario() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {filtradas.map(u => (
-          <div key={u.id} className={`bg-gray-900 border rounded-xl p-4 ${u.cantidad <= (u.stock_minimo || 5) && u.cantidad > 0 ? 'border-red-500/30' : 'border-gray-800'}`}>
+          <div key={`${u.id}-${u.producto_id}`} className={`bg-gray-900 border rounded-xl p-4 ${u.cantidad <= (u.stock_minimo || 5) && u.cantidad > 0 ? 'border-red-500/30' : 'border-gray-800'}`}>
             <div className="flex items-center justify-between mb-3">
               <span className="font-mono text-sm font-bold text-white">{u.codigo}</span>
               <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">{u.tipo}</span>

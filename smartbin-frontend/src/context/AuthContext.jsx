@@ -1,27 +1,34 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState } from 'react'
 
 const AuthContext = createContext()
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [token, setToken] = useState(null)
-  const [loading, setLoading] = useState(true)
+function leerSesion() {
+  try {
+    const token = localStorage.getItem('sb_token')
+    const user = JSON.parse(localStorage.getItem('sb_user'))
+    if (token && user) return { user, token }
+  } catch { /* datos corruptos: se ignoran */ }
+  localStorage.removeItem('sb_token')
+  localStorage.removeItem('sb_user')
+  return { user: null, token: null }
+}
 
-  useEffect(() => {
-    const t = localStorage.getItem('sb_token')
-    const u = localStorage.getItem('sb_user')
-    if (t && u) { setToken(t); setUser(JSON.parse(u)) }
-    setLoading(false)
-  }, [])
+export function AuthProvider({ children }) {
+  // La sesion se lee una sola vez al montar (inicializador perezoso), sin
+  // un efecto ni un render extra. Si lo guardado esta corrupto, se descarta
+  // en lugar de romper toda la aplicacion.
+  const [sesion, setSesion] = useState(leerSesion)
+  const { user, token } = sesion
+  const loading = false
 
   function login(userData, tokenData) {
-    setUser(userData); setToken(tokenData)
+    setSesion({ user: userData, token: tokenData })
     localStorage.setItem('sb_token', tokenData)
     localStorage.setItem('sb_user', JSON.stringify(userData))
   }
 
   function logout() {
-    setUser(null); setToken(null)
+    setSesion({ user: null, token: null })
     localStorage.removeItem('sb_token')
     localStorage.removeItem('sb_user')
   }
@@ -33,4 +40,5 @@ export function AuthProvider({ children }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() { return useContext(AuthContext) }
