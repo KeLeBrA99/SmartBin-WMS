@@ -114,7 +114,11 @@ Abrir `http://localhost:5173`
 SmartBin_Completo/
 ├── SmartBin_WMS/                # Backend
 │   ├── main.py                  # API FastAPI con todos los endpoints
-│   └── poblar_bd.py             # Script para poblar la base de datos
+│   ├── poblar_bd.py             # Script para poblar la base de datos
+│   └── multi_bodega/            # Diseño v2 (en desarrollo, aún sin integrar)
+│       ├── schema.sql           # Esquema multi-bodega con libro mayor
+│       ├── stock_service.py     # Stock sin condiciones de carrera
+│       └── reorder.py           # Analítica de puntos de reorden
 ├── smartbin-frontend/           # Frontend
 │   └── src/
 │       ├── context/
@@ -150,6 +154,28 @@ SmartBin_Completo/
 | POST | `/transferencias` | Transferir stock | Sí |
 | GET | `/usuarios` | Listar usuarios | Admin |
 | POST | `/usuarios` | Crear usuario | Admin |
+
+---
+
+## 🚧 En desarrollo: multi-bodega, concurrencia y analítica
+
+Diseño de la siguiente versión, en `SmartBin_WMS/multi_bodega/`. **Todavía no está conectado a la aplicación**: la app actual sigue usando `main.py` y sus tablas (`inventario`, `ubicaciones`, `productos`); este módulo define un esquema nuevo y es la base de la migración.
+
+| Archivo | Qué resuelve |
+|---------|--------------|
+| `schema.sql` | Esquema multi-bodega: saldo (`stock`) + libro mayor de movimientos de solo inserción, `CHECK` contra stock negativo, índices compuestos e idempotencia por operación |
+| `stock_service.py` | Salidas y transferencias sin condiciones de carrera: descuento atómico (bloqueo pesimista), conteos con bloqueo optimista por `version`, orden fijo de bloqueo y reintento ante deadlocks, cabecera `Idempotency-Key` |
+| `reorder.py` | Puntos de reorden por bodega y producto a partir de la rotación histórica: demanda diaria ponderada hacia lo reciente, stock de seguridad según nivel de servicio y lead time |
+
+Probar la analítica con datos sintéticos (no necesita base de datos):
+
+```bash
+cd SmartBin_WMS/multi_bodega
+pip install pandas numpy
+python reorder.py --demo
+```
+
+**Estado:** `reorder.py` está probado con datos sintéticos. `schema.sql` y `stock_service.py` aún no se han probado contra una instancia real de MySQL.
 
 ---
 
