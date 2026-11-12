@@ -1,7 +1,7 @@
 # 📦 SmartBin WMS
 > Sistema de Gestión de Bodegas (Warehouse Management System)
 
-Aplicación web completa para gestionar inventario, productos, ubicaciones y usuarios de bodega. Desarrollada con **FastAPI** en el backend y **React** en el frontend, con autenticación JWT y roles de usuario.
+Aplicación web completa para gestionar inventario, productos, ubicaciones y usuarios en **una o varias bodegas**, con historial de movimientos y cálculo de puntos de reorden. Desarrollada con **FastAPI** en el backend y **React** en el frontend, con autenticación JWT y roles de usuario.
 
 ---
 
@@ -37,6 +37,9 @@ Aplicación web completa para gestionar inventario, productos, ubicaciones y usu
 - 📦 **Inventario** — tarjetas por ubicación con estados (Normal / Stock bajo / Vacío)
 - 🏷️ **Productos** — crear, editar y ajustar stock desde el panel
 - 🔄 **Transferencias** — mover productos entre ubicaciones de bodega, seguras ante peticiones simultáneas (descuento atómico en la base de datos)
+- 🏭 **Multi-bodega** — varias bodegas, cada una con sus ubicaciones; transferencias dentro de una bodega o entre bodegas
+- 📋 **Movimientos** — entradas, salidas e historial de cada cambio de stock (quién, cuándo, cuánto y saldo resultante)
+- 📈 **Reorden** — punto de reorden y cantidad sugerida por bodega y producto, según las salidas históricas
 - 👥 **Usuarios** — gestión de usuarios con roles (solo admin)
 - 📄 **Reportes en PDF** — exportar inventario y catálogo de productos
 - 📱 **Responsive** — funciona en mobile con menú hamburguesa
@@ -71,33 +74,22 @@ git clone https://github.com/KeLeBrA99/SmartBin-WMS.git
 cd SmartBin-WMS
 ```
 
-### 2. Configurar la base de datos
-```bash
-mysql -u root -p -e "CREATE DATABASE smartbin_wms CHARACTER SET utf8mb4"
-mysql -u root -p smartbin_wms < database/schema.sql
-```
-
-> **¿Ya tenías la base creada con una versión anterior?** No uses `schema.sql`: haz un respaldo y ejecuta `database/migracion_001_integridad.sql`. El backend se niega a arrancar si la migración no está aplicada.
-
-### 3. Iniciar el backend
+### 2. Configurar el backend
 ```bash
 cd SmartBin_WMS
 pip install -r requirements.txt
 cp .env.example .env        # en Windows: copy .env.example .env
 ```
 
-Completa `.env` con tu usuario y contraseña de MySQL y una `SECRET_KEY` propia:
+`.env` ya trae los valores de la instalación local de demostración (`root` / `1234`). Si tu MySQL usa otro usuario o contraseña, cámbialos ahí.
 
+### 3. Preparar la base de datos e iniciar
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-Carga los datos iniciales (categorías, ubicaciones y usuarios por defecto) y arranca:
-
-```bash
-python poblar_bd.py
+python preparar_bd.py
 python -m uvicorn main:app --reload
 ```
+
+`preparar_bd.py` crea la base si no existe, crea las tablas, carga los datos iniciales y **actualiza una base creada con una versión anterior** sin borrar su contenido. Se puede ejecutar las veces que haga falta. Si tu base ya tiene datos, haz antes una copia (MySQL Workbench → Server → Data Export).
 
 El backend queda disponible en `http://localhost:8000`  
 Documentación automática en `http://localhost:8000/docs`
@@ -120,7 +112,7 @@ Pruebas de integración contra una base de datos real, incluida la de transferen
 cd SmartBin_WMS
 pip install -r requirements-dev.txt
 mysql -u root -p -e "CREATE DATABASE smartbin_wms_test CHARACTER SET utf8mb4"
-DB_NAME=smartbin_wms_test python -m pytest
+DB_NAME=smartbin_wms_test python -m pytest     # PowerShell: $env:DB_NAME="smartbin_wms_test"; python -m pytest
 ```
 
 ---
@@ -132,7 +124,7 @@ DB_NAME=smartbin_wms_test python -m pytest
 | admin | admin123 | Administrador |
 | operario1 | operario123 | Operario |
 
-Los crea `poblar_bd.py` y son solo para demostración: cámbialos antes de usar el sistema con datos reales (o define `ADMIN_PASSWORD` y `OPERARIO_PASSWORD` antes de ejecutar el script).
+Los crea `preparar_bd.py` en una base nueva y son solo para demostración: cámbialos antes de usar el sistema con datos reales (o define `ADMIN_PASSWORD` y `OPERARIO_PASSWORD` antes de ejecutar el script).
 
 ---
 
@@ -141,20 +133,20 @@ Los crea `poblar_bd.py` y son solo para demostración: cámbialos antes de usar 
 ```
 SmartBin-WMS/
 ├── database/
-│   ├── schema.sql                       # Tablas para una instalación nueva
-│   └── migracion_001_integridad.sql     # Para bases creadas con una versión anterior
+│   └── schema.sql               # Tablas de la aplicación
 ├── SmartBin_WMS/                # Backend
 │   ├── main.py                  # API FastAPI con todos los endpoints
 │   ├── config.py                # Configuración leída de variables de entorno (.env)
 │   ├── security.py              # Hash y verificación de contraseñas
-│   ├── poblar_bd.py             # Datos iniciales (se puede ejecutar varias veces)
+│   ├── reorden.py               # Cálculo de puntos de reorden
+│   ├── preparar_bd.py           # Crea o actualiza la base de datos (un solo comando)
+│   ├── poblar_bd.py             # Datos iniciales
 │   ├── .env.example             # Plantilla de configuración
 │   ├── requirements.txt
 │   ├── tests/test_api.py        # Pruebas de integración y de concurrencia
-│   └── multi_bodega/            # Diseño v2 (en desarrollo, aún sin integrar)
-│       ├── schema.sql           # Esquema multi-bodega con libro mayor
-│       ├── stock_service.py     # Stock sin condiciones de carrera
-│       └── reorder.py           # Analítica de puntos de reorden
+│   └── multi_bodega/            # Diseño de referencia para la siguiente etapa
+│       ├── schema.sql
+│       └── stock_service.py
 ├── smartbin-frontend/           # Frontend
 │   └── src/
 │       ├── context/
@@ -165,6 +157,9 @@ SmartBin-WMS/
 │       │   ├── Inventario.jsx
 │       │   ├── Productos.jsx
 │       │   ├── Transferencias.jsx
+│       │   ├── Movimientos.jsx
+│       │   ├── Reorden.jsx
+│       │   ├── Bodegas.jsx
 │       │   └── Usuarios.jsx
 │       ├── components/
 │       │   ├── Sidebar.jsx
@@ -187,8 +182,15 @@ SmartBin-WMS/
 | POST | `/productos` | Crear producto | Sí |
 | PUT | `/productos/{id}` | Editar producto | Admin |
 | PATCH | `/productos/{id}/stock` | Ajustar stock | Admin |
-| GET | `/ubicaciones` | Ver inventario por ubicación | Sí |
-| POST | `/transferencias` | Transferir stock | Sí |
+| GET | `/bodegas` | Listar bodegas con sus totales | Sí |
+| POST | `/bodegas` | Crear bodega | Admin |
+| GET | `/ubicaciones` | Ver inventario por ubicación (`?bodega_id=`) | Sí |
+| POST | `/ubicaciones` | Crear ubicación en una bodega | Admin |
+| POST | `/entradas` | Registrar recepción de mercancía | Sí |
+| POST | `/salidas` | Registrar despacho | Sí |
+| POST | `/transferencias` | Transferir stock entre ubicaciones o bodegas | Sí |
+| GET | `/movimientos` | Historial (`?tipo=&producto_id=&bodega_id=&limite=`) | Sí |
+| GET | `/reorden` | Puntos de reorden (`?bodega_id=&dias=`) | Sí |
 | GET | `/usuarios` | Listar usuarios | Admin |
 | POST | `/usuarios` | Crear usuario | Admin |
 
@@ -198,31 +200,36 @@ SmartBin-WMS/
 
 - **Sin secretos en el código:** la clave JWT y las credenciales de MySQL se leen de `.env`, que no se sube al repositorio.
 - **Contraseñas:** PBKDF2-HMAC-SHA256 con sal por usuario. Las cuentas con el hash anterior se actualizan solas al iniciar sesión.
-- **Transferencias sin condiciones de carrera:** comprobar y descontar es una sola sentencia SQL, las filas se bloquean siempre en el mismo orden y los deadlocks se reintentan.
+- **Salidas y transferencias sin condiciones de carrera:** comprobar y descontar es una sola sentencia SQL, las filas se bloquean siempre en el mismo orden y los deadlocks se reintentan.
 - **La base de datos como última defensa:** una fila única por ubicación y producto, y `CHECK (cantidad >= 0)`.
+- **Historial inalterable:** cada cambio de stock escribe una fila en `movimientos` dentro de la misma transacción.
+- **Límite de intentos de login:** 5 fallos en 15 minutos bloquean ese usuario desde esa IP.
 - **Validación de entradas** en la API (cantidades positivas, roles válidos, contraseñas de 8+ caracteres) y **escape de HTML** en los reportes PDF.
 
 ---
 
-## 🚧 En desarrollo: multi-bodega, concurrencia y analítica
+## 📈 Cómo se calcula el reorden
 
-Diseño de la siguiente versión, en `SmartBin_WMS/multi_bodega/`. **Todavía no está conectado a la aplicación**: la app actual sigue usando `main.py` y sus tablas (`inventario`, `ubicaciones`, `productos`); este módulo define un esquema nuevo y es la base de la migración.
+Por cada bodega y producto, a partir de las **salidas** registradas (las transferencias y los ajustes no cuentan como demanda):
 
-| Archivo | Qué resuelve |
-|---------|--------------|
-| `schema.sql` | Esquema multi-bodega: saldo (`stock`) + libro mayor de movimientos de solo inserción, `CHECK` contra stock negativo, índices compuestos e idempotencia por operación |
-| `stock_service.py` | Salidas y transferencias sin condiciones de carrera: descuento atómico (bloqueo pesimista), conteos con bloqueo optimista por `version`, orden fijo de bloqueo y reintento ante deadlocks, cabecera `Idempotency-Key` |
-| `reorder.py` | Puntos de reorden por bodega y producto a partir de la rotación histórica: demanda diaria ponderada hacia lo reciente, stock de seguridad según nivel de servicio y lead time |
-
-Probar la analítica con datos sintéticos (no necesita base de datos):
-
-```bash
-cd SmartBin_WMS/multi_bodega
-pip install pandas numpy
-python reorder.py --demo
+```
+punto de reorden = demanda diaria × lead time + stock de seguridad
+stock de seguridad = z × desviación de la demanda × √lead time
 ```
 
-**Estado:** `reorder.py` está probado con datos sintéticos. `schema.sql` y `stock_service.py` aún no se han probado contra una instancia real de MySQL.
+- La demanda diaria pondera más las salidas recientes (vida media de 45 días) y cuenta como cero los días sin salidas.
+- `z` sale del nivel de servicio del producto (95 % por defecto) y el lead time es de 7 días por defecto; ambos son columnas de `productos` (`nivel_servicio`, `lead_time_dias`) y por ahora se cambian directamente en la base de datos.
+- Con menos de 28 días de historia el resultado se marca como poco fiable. El modelo no contempla estacionalidad.
+
+---
+
+## 🚧 Siguiente etapa
+
+`SmartBin_WMS/multi_bodega/` conserva el diseño de referencia de lo que aún **no** está integrado:
+
+- **Idempotencia** (`Idempotency-Key`): que un reintento por doble clic o fallo de red no registre dos veces la misma salida.
+- **Bloqueo optimista** por versión en los conteos físicos.
+- **Stock reservado** por pedidos y stock en tránsito entre bodegas.
 
 ---
 
