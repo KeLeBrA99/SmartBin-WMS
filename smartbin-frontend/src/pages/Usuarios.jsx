@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import api from '../api'
+import { mensajeError } from '../utils'
 
 export default function Usuarios() {
   const [usuarios, setUsuarios] = useState([])
@@ -7,19 +8,21 @@ export default function Usuarios() {
   const [form, setForm] = useState({ usuario: '', password: '', nombre: '', rol: 'operario' })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [esError, setEsError] = useState(false)
 
   useEffect(() => {
     api.get('/usuarios').then(r => setUsuarios(r.data))
+      .catch(err => { setEsError(true); setMsg(mensajeError(err, 'No se pudieron cargar los usuarios')) })
   }, [])
 
   async function handleSubmit(e) {
-    e.preventDefault(); setSaving(true); setMsg('')
+    e.preventDefault(); setSaving(true); setMsg(''); setEsError(false)
     try {
       await api.post('/usuarios', form)
       const { data } = await api.get('/usuarios')
       setUsuarios(data); setMsg('Usuario creado exitosamente')
       setShowForm(false); setForm({ usuario: '', password: '', nombre: '', rol: 'operario' })
-    } catch (err) { setMsg(err.response?.data?.detail || 'Error al crear usuario') }
+    } catch (err) { setEsError(true); setMsg(mensajeError(err, 'Error al crear usuario')) }
     finally { setSaving(false) }
   }
 
@@ -36,7 +39,7 @@ export default function Usuarios() {
         </button>
       </div>
 
-      {msg && <p className={`text-sm px-4 py-2 rounded-lg border ${msg.includes('Error') ? 'text-red-400 bg-red-400/10 border-red-400/20' : 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'}`}>{msg}</p>}
+      {msg && <p className={`text-sm px-4 py-2 rounded-lg border ${esError ? 'text-red-400 bg-red-400/10 border-red-400/20' : 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'}`}>{msg}</p>}
 
       {showForm && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -45,11 +48,11 @@ export default function Usuarios() {
             {[
               { key: 'nombre', label: 'Nombre Completo', placeholder: 'Jose Salamanca' },
               { key: 'usuario', label: 'Usuario', placeholder: 'jsalamanca' },
-              { key: 'password', label: 'Contrasena', placeholder: '••••••••', type: 'password' },
+              { key: 'password', label: 'Contrasena (min. 8 caracteres)', placeholder: '••••••••', type: 'password', minLength: 8 },
             ].map(f => (
               <div key={f.key}>
                 <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">{f.label}</label>
-                <input type={f.type || 'text'} placeholder={f.placeholder} value={form[f.key]}
+                <input type={f.type || 'text'} placeholder={f.placeholder} value={form[f.key]} required minLength={f.minLength}
                   onChange={e => setForm({...form, [f.key]: e.target.value})}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-emerald-500"
                 />

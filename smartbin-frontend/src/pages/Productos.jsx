@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import api from '../api'
+import { useAuth } from '../context/AuthContext'
+import { escapeHtml, abrirReporte, mensajeError } from '../utils'
 
 function generarPDFProductos(productos) {
   const fecha = new Date().toLocaleDateString('es-CO', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -7,9 +9,9 @@ function generarPDFProductos(productos) {
   const filas = productos.map(p => {
     const alerta = p.stock_total <= p.stock_minimo
     return `<tr style="border-bottom:1px solid #f3f4f6">
-      <td style="padding:10px 12px;font-family:monospace;color:#059669">${p.sku}</td>
-      <td style="padding:10px 12px;font-weight:500">${p.nombre}</td>
-      <td style="padding:10px 12px;color:#6b7280">${p.categoria||'-'}</td>
+      <td style="padding:10px 12px;font-family:monospace;color:#059669">${escapeHtml(p.sku)}</td>
+      <td style="padding:10px 12px;font-weight:500">${escapeHtml(p.nombre)}</td>
+      <td style="padding:10px 12px;color:#6b7280">${escapeHtml(p.categoria||'-')}</td>
       <td style="padding:10px 12px;font-weight:700;color:${alerta?'#ef4444':'#111827'}">${p.stock_total}</td>
       <td style="padding:10px 12px;color:#6b7280">${p.stock_minimo}</td>
       <td style="padding:10px 12px"><span style="background:${alerta?'#fee2e2':'#d1fae5'};color:${alerta?'#dc2626':'#059669'};padding:2px 10px;border-radius:20px;font-size:0.78em;font-weight:600">${alerta?'Stock bajo':'Normal'}</span></td>
@@ -39,7 +41,7 @@ function generarPDFProductos(productos) {
     <div class="no-print" style="position:fixed;bottom:24px;right:24px">
       <button onclick="window.print()" style="background:#10b981;color:white;border:none;padding:12px 24px;border-radius:8px;font-size:1em;font-weight:600;cursor:pointer">🖨️ Imprimir / Guardar PDF</button></div>
     </body></html>`
-  const v = window.open('', '_blank'); v.document.write(html); v.document.close()
+  abrirReporte(html)
 }
 
 const INPUT = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-emerald-500'
@@ -58,10 +60,17 @@ export default function Productos() {
   const [saving, setSaving]         = useState(false)
   const [busqueda, setBusqueda]     = useState('')
   const [toast, setToast]           = useState('')
+  const [errorCarga, setErrorCarga] = useState('')
+  const { user } = useAuth()
+  const esAdmin = user?.rol === 'admin'
 
   async function cargar() {
-    const [p, c] = await Promise.all([api.get('/productos'), api.get('/categorias')])
-    setProductos(p.data); setCategorias(c.data); setLoading(false)
+    try {
+      const [p, c] = await Promise.all([api.get('/productos'), api.get('/categorias')])
+      setProductos(p.data); setCategorias(c.data); setErrorCarga('')
+    } catch (err) {
+      setErrorCarga(mensajeError(err, 'No se pudieron cargar los productos'))
+    } finally { setLoading(false) }
   }
 
   useEffect(() => { cargar() }, [])
@@ -97,28 +106,27 @@ export default function Productos() {
         nombre: form.nombre,
         categoria_id: parseInt(form.categoria_id),
         precio: parseFloat(form.precio) || 0,
-        stock_minimo: parseInt(form.stock_minimo) || 5
+        stock_minimo: Number.isNaN(parseInt(form.stock_minimo)) ? 5 : parseInt(form.stock_minimo)
       }
       if (editando) { await api.put(`/productos/${editando.id}`, payload) }
       else { await api.post('/productos', payload) }
       await cargar(); setShowForm(false); setEditando(null)
       showToast(editando ? '✅ Producto actualizado' : '✅ Producto creado')
     } catch (err) {
-      const detail = err.response?.data?.detail
-      setFormError(typeof detail === 'string' ? detail : 'Error al guardar el producto')
+      setFormError(mensajeError(err, 'Error al guardar el producto'))
     } finally { setSaving(false) }
   }
 
   async function ajustarStock() {
-    if (!nuevoStock && nuevoStock !== 0) { setStockError('Ingresa una cantidad'); return }
+    const cantidad = parseInt(nuevoStock)
+    if (Number.isNaN(cantidad) || cantidad < 0) { setStockError('Ingresa una cantidad valida (0 o mas)'); return }
     setStockError('')
     try {
-      await api.patch(`/productos/${stockModal.id}/stock`, { cantidad: parseInt(nuevoStock) })
+      await api.patch(`/productos/${stockModal.id}/stock`, { cantidad })
       await cargar(); setStockModal(null); setNuevoStock('')
       showToast('✅ Stock actualizado')
     } catch (err) {
-      const detail = err.response?.data?.detail
-      setStockError(typeof detail === 'string' ? detail : 'Error al ajustar stock')
+      setStockError(mensajeError(err, 'Error al ajustar stock'))
     }
   }
 
@@ -162,14 +170,14 @@ export default function Productos() {
           </h2>
           <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[
-              { key:'sku',          label:'SKU',           type:'text',   placeholder:'PROD-001' },
-              { key:'nombre',       label:'Nombre',        type:'text',   placeholder:'Nombre del producto' },
-              { key:'precio',       label:'Precio Compra', type:'number', placeholder:'0.00' },
-              { key:'stock_minimo', label:'Stock Minimo',  type:'number', placeholder:'5' },
+              { key:'sku',          label:'SKU',           type:'text',   placeholder:'PROD-001', required:true },
+              { key:'nombre',       label:'Nombre',        type:'text',   placeholder:'Nombre del producto', required:true },
+              { key:'precio',       label:'Precio Compra', type:'number', placeholder:'0.00', min:0, step:'0.01' },
+              { key:'stock_minimo', label:'Stock Minimo',  type:'number', placeholder:'5', min:0, step:1 },
             ].map(f => (
               <div key={f.key}>
                 <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">{f.label}</label>
-                <input type={f.type} placeholder={f.placeholder} value={form[f.key]}
+                <input type={f.type} placeholder={f.placeholder} value={form[f.key]} required={f.required} min={f.min} step={f.step}
                   onChange={e => setForm({...form, [f.key]: e.target.value})} className={INPUT} />
               </div>
             ))}
@@ -223,6 +231,8 @@ export default function Productos() {
         </div>
       )}
 
+      {errorCarga && <p className="text-red-400 text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-4 py-2">{errorCarga}</p>}
+
       <input type="text" placeholder="Buscar productos..." value={busqueda}
         onChange={e => setBusqueda(e.target.value)}
         className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-emerald-500"
@@ -248,6 +258,7 @@ export default function Productos() {
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-400">{p.stock_minimo}</td>
                 <td className="px-4 py-3">
+                  {esAdmin ? (
                   <div className="flex gap-2">
                     <button onClick={() => abrirEditar(p)}
                       className="text-xs bg-blue-500/15 text-blue-400 border border-blue-500/20 px-2.5 py-1 rounded-lg hover:bg-blue-500/25 transition-colors">
@@ -258,6 +269,7 @@ export default function Productos() {
                       📦 Stock
                     </button>
                   </div>
+                  ) : <span className="text-xs text-gray-600">Solo admin</span>}
                 </td>
               </tr>
             ))}
