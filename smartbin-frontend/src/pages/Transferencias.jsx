@@ -43,7 +43,7 @@ export default function Transferencias() {
     <div className="p-6 space-y-5">
       <div>
         <h1 className="text-2xl font-bold text-white">Transferencias</h1>
-        <p className="text-gray-400 text-sm mt-1">Mover productos entre ubicaciones de bodega</p>
+        <p className="text-gray-400 text-sm mt-1">Mover productos entre ubicaciones, de la misma bodega o de bodegas distintas</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -65,7 +65,7 @@ export default function Transferencias() {
                 <select required value={form.origen_id} onChange={e => setForm({...form, origen_id: e.target.value})}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-emerald-500">
                   <option value="">Origen...</option>
-                  {origenes.map(u => <option key={`${u.id}-${u.producto_id}`} value={u.id}>{u.codigo} — {u.producto} ({u.cantidad})</option>)}
+                  {origenes.map(u => <option key={`${u.id}-${u.producto_id}`} value={u.id}>{u.bodega} · {u.codigo} — {u.producto} ({u.cantidad})</option>)}
                 </select>
               </div>
               <div>
@@ -73,7 +73,7 @@ export default function Transferencias() {
                 <select required value={form.destino_id} onChange={e => setForm({...form, destino_id: e.target.value})}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-emerald-500">
                   <option value="">Destino...</option>
-                  {destinos.map(u => <option key={u.id} value={u.id}>{u.codigo} - {u.tipo}</option>)}
+                  {destinos.map(u => <option key={u.id} value={u.id}>{u.bodega} · {u.codigo} - {u.tipo}</option>)}
                 </select>
               </div>
             </div>
@@ -100,7 +100,7 @@ export default function Transferencias() {
               <div key={`${u.id}-${u.producto_id}`} className="flex items-center justify-between px-4 py-2.5 bg-gray-800 rounded-lg">
                 <div>
                   <span className="font-mono text-sm font-bold text-white">{u.codigo}</span>
-                  <span className="text-xs text-gray-500 ml-2">{u.tipo}</span>
+                  <span className="text-xs text-gray-500 ml-2">{u.bodega} · {u.tipo}</span>
                 </div>
                 <div className="text-right">
                   <span className={`text-sm font-bold ${u.cantidad === 0 ? 'text-gray-500' : 'text-white'}`}>{u.cantidad}</span>

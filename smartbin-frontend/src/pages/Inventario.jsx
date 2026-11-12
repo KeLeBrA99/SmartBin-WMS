@@ -107,6 +107,8 @@ export default function Inventario() {
   const [loading, setLoading] = useState(true)
   const [busqueda, setBusqueda] = useState('')
   const [error, setError] = useState('')
+  const [bodegaId, setBodegaId] = useState('')
+  const bodegas = [...new Map(ubicaciones.map(u => [u.bodega_id, u.bodega])).entries()]
 
   function cargar() {
     return api.get('/ubicaciones')
@@ -120,8 +122,9 @@ export default function Inventario() {
   }, [])
 
   const filtradas = ubicaciones.filter(u =>
-    u.codigo.toLowerCase().includes(busqueda.toLowerCase()) ||
-    u.producto.toLowerCase().includes(busqueda.toLowerCase())
+    (!bodegaId || u.bodega_id === parseInt(bodegaId)) &&
+    (u.codigo.toLowerCase().includes(busqueda.toLowerCase()) ||
+     u.producto.toLowerCase().includes(busqueda.toLowerCase()))
   )
 
   const getBadge = (cantidad, minimo) => {
@@ -142,7 +145,7 @@ export default function Inventario() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => generarPDF(ubicaciones)}
+            onClick={() => generarPDF(filtradas)}
             className="text-sm bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-semibold px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
           >
             📄 <span className="hidden sm:inline">Exportar PDF</span>
@@ -158,20 +161,27 @@ export default function Inventario() {
 
       {error && <p className="text-red-400 text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-4 py-2">{error}</p>}
 
-      <input
-        type="text"
-        placeholder="Buscar por ubicacion o producto..."
-        value={busqueda}
-        onChange={e => setBusqueda(e.target.value)}
-        className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-emerald-500 transition-colors"
-      />
+      <div className="flex flex-col sm:flex-row gap-3">
+        <select value={bodegaId} onChange={e => setBodegaId(e.target.value)}
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-3 text-white text-sm outline-none focus:border-emerald-500">
+          <option value="">Todas las bodegas</option>
+          {bodegas.map(([id, codigo]) => <option key={id} value={id}>{codigo}</option>)}
+        </select>
+        <input
+          type="text"
+          placeholder="Buscar por ubicacion o producto..."
+          value={busqueda}
+          onChange={e => setBusqueda(e.target.value)}
+          className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-emerald-500 transition-colors"
+        />
+      </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {filtradas.map(u => (
           <div key={`${u.id}-${u.producto_id}`} className={`bg-gray-900 border rounded-xl p-4 ${u.cantidad <= (u.stock_minimo || 5) && u.cantidad > 0 ? 'border-red-500/30' : 'border-gray-800'}`}>
             <div className="flex items-center justify-between mb-3">
               <span className="font-mono text-sm font-bold text-white">{u.codigo}</span>
-              <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">{u.tipo}</span>
+              <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">{u.bodega} · {u.tipo}</span>
             </div>
             <p className="text-gray-300 text-sm mb-3 truncate">{u.producto}</p>
             <div className="flex items-center justify-between">

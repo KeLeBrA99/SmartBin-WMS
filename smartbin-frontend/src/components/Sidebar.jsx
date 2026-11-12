@@ -7,8 +7,11 @@ const links = [
   { to: '/inventario',     icon: '📦', label: 'Inventario' },
   { to: '/productos',      icon: '🏷️',  label: 'Productos' },
   { to: '/transferencias', icon: '🔄', label: 'Transferencias' },
+  { to: '/movimientos',    icon: '📋', label: 'Movimientos' },
+  { to: '/reorden',        icon: '📈', label: 'Reorden' },
 ]
 const adminLinks = [
+  { to: '/bodegas',  icon: '🏭', label: 'Bodegas' },
   { to: '/usuarios', icon: '👥', label: 'Usuarios' },
 ]
 
