@@ -130,6 +130,16 @@ export default function Productos() {
     }
   }
 
+  async function eliminar(p) {
+    if (!window.confirm(`¿Eliminar el producto ${p.sku} — ${p.nombre}? Esta accion no se puede deshacer.`)) return
+    try {
+      await api.delete(`/productos/${p.id}`)
+      await cargar(); showToast('✅ Producto eliminado')
+    } catch (err) {
+      showToast(`⚠️ ${mensajeError(err, 'No se pudo eliminar el producto')}`)
+    }
+  }
+
   const filtrados = productos.filter(p =>
     p.nombre.toLowerCase().includes(busqueda.toLowerCase()) ||
     p.sku.toLowerCase().includes(busqueda.toLowerCase())
@@ -267,6 +277,10 @@ export default function Productos() {
                     <button onClick={() => { setStockModal(p); setNuevoStock(p.stock_total); setStockError('') }}
                       className="text-xs bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-lg hover:bg-emerald-500/25 transition-colors">
                       📦 Stock
+                    </button>
+                    <button onClick={() => eliminar(p)}
+                      className="text-xs bg-red-500/15 text-red-400 border border-red-500/20 px-2.5 py-1 rounded-lg hover:bg-red-500/25 transition-colors">
+                      🗑️ Eliminar
                     </button>
                   </div>
                   ) : <span className="text-xs text-gray-600">Solo admin</span>}
