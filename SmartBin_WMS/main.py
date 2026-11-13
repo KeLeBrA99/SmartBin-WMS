@@ -148,6 +148,12 @@ class UsuarioNuevo(BaseModel):
     rol: Literal["admin", "operario"]
 
 
+class UsuarioEditar(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    rol: Literal["admin", "operario"]
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)  # None = no cambiarla
+
+
 class ProductoNuevo(BaseModel):
     sku: str = Field(min_length=1, max_length=60)
     nombre: str = Field(min_length=1, max_length=200)
@@ -190,6 +196,11 @@ class BodegaNueva(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
 
 
+class UbicacionEditar(BaseModel):
+    codigo: str = Field(min_length=1, max_length=40)
+    tipo: str = Field(min_length=1, max_length=30)
+
+
 class UbicacionNueva(BaseModel):
     bodega_id: int
     codigo: str = Field(min_length=1, max_length=40)
@@ -206,11 +217,19 @@ def crear_token(uid, usuario, rol):
 
 def get_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        return jwt.decode(creds.credentials, SECRET_KEY, algorithms=["HS256"])
+        datos = jwt.decode(creds.credentials, SECRET_KEY, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Token expirado")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Token invalido")
+    # El rol se lee de la base en cada peticion: si a alguien lo eliminan o le
+    # cambian el rol, su token deja de servir de inmediato, no 8 horas despues.
+    with transaccion() as cur:
+        cur.execute("SELECT usuario, rol FROM usuarios WHERE id=%s", (datos.get("id"),))
+        fila = cur.fetchone()
+    if not fila:
+        raise HTTPException(401, "El usuario ya no existe")
+    return {**datos, "usuario": fila["usuario"], "rol": fila["rol"]}
 
 
 def solo_admin(user=Depends(get_user)):
@@ -353,6 +372,44 @@ def crear_usuario(data: UsuarioNuevo, user=Depends(solo_admin)):
     return {"mensaje": "Usuario creado"}
 
 
+def _exigir_otro_admin(cur, usuario_id: int):
+    """Impide dejar el sistema sin ningun administrador."""
+    cur.execute("SELECT COUNT(*) AS n FROM usuarios WHERE rol='admin' AND id<>%s", (usuario_id,))
+    if cur.fetchone()["n"] == 0:
+        raise HTTPException(409, "Debe quedar al menos un administrador")
+
+
+@app.put("/usuarios/{usuario_id}")
+def editar_usuario(usuario_id: int, data: UsuarioEditar, user=Depends(solo_admin)):
+    with transaccion() as cur:
+        cur.execute("SELECT rol FROM usuarios WHERE id=%s FOR UPDATE", (usuario_id,))
+        actual = cur.fetchone()
+        if not actual:
+            raise HTTPException(404, "Usuario no encontrado")
+        if actual["rol"] == "admin" and data.rol != "admin":
+            _exigir_otro_admin(cur, usuario_id)
+        cur.execute("UPDATE usuarios SET nombre=%s, rol=%s WHERE id=%s", (data.nombre, data.rol, usuario_id))
+        if data.password:
+            cur.execute("UPDATE usuarios SET password=%s WHERE id=%s", (hash_password(data.password), usuario_id))
+    return {"mensaje": "Usuario actualizado"}
+
+
+@app.delete("/usuarios/{usuario_id}")
+def eliminar_usuario(usuario_id: int, user=Depends(solo_admin)):
+    if usuario_id == user["id"]:
+        raise HTTPException(400, "No puedes eliminar tu propio usuario")
+    with transaccion() as cur:
+        cur.execute("SELECT rol FROM usuarios WHERE id=%s FOR UPDATE", (usuario_id,))
+        actual = cur.fetchone()
+        if not actual:
+            raise HTTPException(404, "Usuario no encontrado")
+        if actual["rol"] == "admin":
+            _exigir_otro_admin(cur, usuario_id)
+        # El historial conserva sus movimientos (sin nombre de usuario).
+        cur.execute("DELETE FROM usuarios WHERE id=%s", (usuario_id,))
+    return {"mensaje": "Usuario eliminado"}
+
+
 # ── BODEGAS Y UBICACIONES ────────────────────────────────
 @app.get("/bodegas")
 def ver_bodegas(user=Depends(get_user)):
@@ -375,6 +432,33 @@ def crear_bodega(data: BodegaNueva, user=Depends(solo_admin)):
     with transaccion() as cur:
         cur.execute("INSERT INTO bodegas (codigo, nombre) VALUES (%s,%s)", (data.codigo.upper(), data.nombre))
         return {"id": cur.lastrowid, "mensaje": "Bodega creada"}
+
+
+@app.put("/bodegas/{bodega_id}")
+def editar_bodega(bodega_id: int, data: BodegaNueva, user=Depends(solo_admin)):
+    with transaccion() as cur:
+        _exigir(cur, "bodegas", bodega_id, "La bodega no existe")
+        cur.execute("UPDATE bodegas SET codigo=%s, nombre=%s WHERE id=%s", (data.codigo.upper(), data.nombre, bodega_id))
+    return {"mensaje": "Bodega actualizada"}
+
+
+@app.delete("/bodegas/{bodega_id}")
+def eliminar_bodega(bodega_id: int, user=Depends(solo_admin)):
+    """Elimina la bodega y sus ubicaciones, solo si no queda stock en ella."""
+    with transaccion() as cur:
+        _exigir(cur, "bodegas", bodega_id, "La bodega no existe")
+        cur.execute("SELECT COUNT(*) AS n FROM bodegas")
+        if cur.fetchone()["n"] <= 1:
+            raise HTTPException(409, "Debe existir al menos una bodega")
+        cur.execute(
+            "SELECT COALESCE(SUM(i.cantidad), 0) AS unidades FROM ubicaciones u "
+            "JOIN inventario i ON i.ubicacion_id = u.id WHERE u.bodega_id=%s FOR UPDATE", (bodega_id,))
+        if cur.fetchone()["unidades"] > 0:
+            raise HTTPException(409, "La bodega aun tiene stock. Transfierelo o dale salida antes de eliminarla")
+        cur.execute("DELETE i FROM inventario i JOIN ubicaciones u ON u.id = i.ubicacion_id WHERE u.bodega_id=%s", (bodega_id,))
+        cur.execute("DELETE FROM ubicaciones WHERE bodega_id=%s", (bodega_id,))
+        cur.execute("DELETE FROM bodegas WHERE id=%s", (bodega_id,))
+    return {"mensaje": "Bodega eliminada"}
 
 
 @app.get("/ubicaciones")
@@ -404,6 +488,26 @@ def crear_ubicacion(data: UbicacionNueva, user=Depends(solo_admin)):
         cur.execute("INSERT INTO ubicaciones (bodega_id, codigo, tipo) VALUES (%s,%s,%s)",
                     (data.bodega_id, data.codigo.upper(), data.tipo))
         return {"id": cur.lastrowid, "mensaje": "Ubicacion creada"}
+
+
+@app.put("/ubicaciones/{ubicacion_id}")
+def editar_ubicacion(ubicacion_id: int, data: UbicacionEditar, user=Depends(solo_admin)):
+    with transaccion() as cur:
+        _exigir(cur, "ubicaciones", ubicacion_id, "La ubicacion no existe")
+        cur.execute("UPDATE ubicaciones SET codigo=%s, tipo=%s WHERE id=%s", (data.codigo.upper(), data.tipo, ubicacion_id))
+    return {"mensaje": "Ubicacion actualizada"}
+
+
+@app.delete("/ubicaciones/{ubicacion_id}")
+def eliminar_ubicacion(ubicacion_id: int, user=Depends(solo_admin)):
+    with transaccion() as cur:
+        _exigir(cur, "ubicaciones", ubicacion_id, "La ubicacion no existe")
+        cur.execute("SELECT COALESCE(SUM(cantidad), 0) AS unidades FROM inventario WHERE ubicacion_id=%s FOR UPDATE", (ubicacion_id,))
+        if cur.fetchone()["unidades"] > 0:
+            raise HTTPException(409, "La ubicacion aun tiene stock. Transfierelo o dale salida antes de eliminarla")
+        cur.execute("DELETE FROM inventario WHERE ubicacion_id=%s", (ubicacion_id,))
+        cur.execute("DELETE FROM ubicaciones WHERE id=%s", (ubicacion_id,))
+    return {"mensaje": "Ubicacion eliminada"}
 
 
 # ── PRODUCTOS ────────────────────────────────────────────
@@ -443,6 +547,19 @@ def editar_producto(producto_id: int, producto: ProductoEditar, user=Depends(sol
             WHERE id=%s
         """, (producto.sku, producto.nombre, producto.categoria_id, producto.precio, producto.stock_minimo, producto_id))
     return {"mensaje": "Producto actualizado"}
+
+
+@app.delete("/productos/{producto_id}")
+def eliminar_producto(producto_id: int, user=Depends(solo_admin)):
+    with transaccion() as cur:
+        _exigir(cur, "productos", producto_id, "Producto no encontrado")
+        cur.execute("SELECT COALESCE(SUM(cantidad), 0) AS unidades FROM inventario WHERE producto_id=%s FOR UPDATE", (producto_id,))
+        if cur.fetchone()["unidades"] > 0:
+            raise HTTPException(409, "El producto aun tiene stock. Dale salida o ajustalo a 0 antes de eliminarlo")
+        cur.execute("DELETE FROM inventario WHERE producto_id=%s", (producto_id,))
+        # Sus movimientos se conservan en el historial.
+        cur.execute("DELETE FROM productos WHERE id=%s", (producto_id,))
+    return {"mensaje": "Producto eliminado"}
 
 
 @app.patch("/productos/{producto_id}/stock")

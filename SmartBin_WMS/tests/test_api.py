@@ -302,3 +302,58 @@ def test_login_se_bloquea_tras_cinco_fallos(api):
     token(api, "op", "operario123")                                     # otro usuario no se ve afectado
     main._fallos_login.clear()
     token(api)
+
+
+# ── Editar y eliminar ────────────────────────────────────
+def test_editar_y_eliminar_usuarios(api):
+    h = token(api)
+    op_id = sql("SELECT id FROM usuarios WHERE usuario='op'")[0]["id"]
+    admin_id = sql("SELECT id FROM usuarios WHERE usuario='admin'")[0]["id"]
+    h_op = token(api, "op", "operario123")
+
+    assert api.put(f"/usuarios/{op_id}", headers=h_op, json={"nombre": "X", "rol": "admin"}).status_code == 403
+    # no se puede dejar el sistema sin administrador, ni borrarse a uno mismo
+    assert api.put(f"/usuarios/{admin_id}", headers=h, json={"nombre": "Admin", "rol": "operario"}).status_code == 409
+    assert api.delete(f"/usuarios/{admin_id}", headers=h).status_code == 400
+
+    assert api.put(f"/usuarios/{op_id}", headers=h, json={"nombre": "Operaria", "rol": "operario", "password": "clave-nueva-1"}).status_code == 200
+    assert api.post("/login", json={"usuario": "op", "password": "operario123"}).status_code == 401
+    token(api, "op", "clave-nueva-1")
+    assert api.put(f"/usuarios/{op_id}", headers=h, json={"nombre": "Operaria", "rol": "operario"}).status_code == 200
+    token(api, "op", "clave-nueva-1")                                   # sin password: no cambia
+
+    # el cambio de rol y la eliminacion aplican al token ya emitido
+    assert api.get("/usuarios", headers=h_op).status_code == 403
+    api.put(f"/usuarios/{op_id}", headers=h, json={"nombre": "Operaria", "rol": "admin"})
+    assert api.get("/usuarios", headers=h_op).status_code == 200
+    assert api.delete(f"/usuarios/{op_id}", headers=h).status_code == 200
+    assert api.get("/productos", headers=h_op).status_code == 401
+    assert api.delete(f"/usuarios/{op_id}", headers=h).status_code == 404
+
+
+def test_editar_y_eliminar_bodegas_ubicaciones_y_productos(api):
+    h, op = token(api), token(api, "op", "operario123")
+    assert api.delete("/ubicaciones/2", headers=op).status_code == 403
+
+    # con stock no se elimina nada
+    assert api.delete("/ubicaciones/1", headers=h).status_code == 409
+    assert api.delete("/bodegas/1", headers=h).status_code == 409
+    assert api.delete("/productos/1", headers=h).status_code == 409
+
+    assert api.put("/ubicaciones/2", headers=h, json={"codigo": "b-07", "tipo": "Reserva"}).status_code == 200
+    assert sql("SELECT codigo, tipo FROM ubicaciones WHERE id=2")[0] == {"codigo": "B-07", "tipo": "Reserva"}
+    assert api.put("/ubicaciones/2", headers=h, json={"codigo": "A-01", "tipo": "Reserva"}).status_code == 409  # repetido en la bodega
+    assert api.delete("/ubicaciones/2", headers=h).status_code == 200
+    assert api.delete("/ubicaciones/2", headers=h).status_code == 404
+
+    assert api.put("/bodegas/2", headers=h, json={"codigo": "sur", "nombre": "Bodega Sur"}).status_code == 200
+    assert api.put("/bodegas/2", headers=h, json={"codigo": "PRINCIPAL", "nombre": "x"}).status_code == 409
+    assert api.delete("/bodegas/2", headers=h).status_code == 200          # vacia: se va con su ubicacion
+    assert sql("SELECT COUNT(*) AS n FROM ubicaciones WHERE bodega_id=2")[0]["n"] == 0
+
+    # producto: se elimina al quedar en 0 y su historial se conserva
+    api.patch("/productos/1/stock", headers=h, json={"cantidad": 0})
+    assert api.delete("/bodegas/1", headers=h).status_code == 409          # es la unica bodega
+    assert api.delete("/productos/1", headers=h).status_code == 200
+    assert api.get("/productos", headers=h).json() == []
+    assert len(api.get("/movimientos", headers=h).json()) == 1

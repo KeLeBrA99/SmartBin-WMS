@@ -22,6 +22,15 @@ Aplicación web completa para gestionar inventario, productos, ubicaciones y usu
 ### Transferencias
 ![Transferencias](screenshots/transferencias.png)
 
+### Movimientos
+![Movimientos](screenshots/movimientos.png)
+
+### Puntos de reorden
+![Reorden](screenshots/reorden.png)
+
+### Bodegas
+![Bodegas](screenshots/bodegas.png)
+
 ### Usuarios
 ![Usuarios](screenshots/usuarios.png)
 
@@ -91,6 +100,8 @@ python -m uvicorn main:app --reload
 
 `preparar_bd.py` crea la base si no existe, crea las tablas, carga los datos iniciales y **actualiza una base creada con una versión anterior** sin borrar su contenido. Se puede ejecutar las veces que haga falta. Si tu base ya tiene datos, haz antes una copia (MySQL Workbench → Server → Data Export).
 
+**Datos de demostración (opcional).** Para ver el sistema con contenido —dos bodegas, 17 productos y 60 días de entradas, salidas y transferencias simuladas— ejecuta `python datos_demo.py`. Si ya hay productos, `python datos_demo.py --reiniciar` **borra** bodegas, ubicaciones, productos, inventario y movimientos antes de cargar la demo; los usuarios se conservan.
+
 El backend queda disponible en `http://localhost:8000`  
 Documentación automática en `http://localhost:8000/docs`
 
@@ -141,6 +152,7 @@ SmartBin-WMS/
 │   ├── reorden.py               # Cálculo de puntos de reorden
 │   ├── preparar_bd.py           # Crea o actualiza la base de datos (un solo comando)
 │   ├── poblar_bd.py             # Datos iniciales
+│   ├── datos_demo.py            # Datos de demostración con 60 días de historial
 │   ├── .env.example             # Plantilla de configuración
 │   ├── requirements.txt
 │   ├── tests/test_api.py        # Pruebas de integración y de concurrencia
@@ -184,8 +196,12 @@ SmartBin-WMS/
 | PATCH | `/productos/{id}/stock` | Ajustar stock | Admin |
 | GET | `/bodegas` | Listar bodegas con sus totales | Sí |
 | POST | `/bodegas` | Crear bodega | Admin |
+| PUT / DELETE | `/bodegas/{id}` | Editar o eliminar bodega (sin stock) | Admin |
 | GET | `/ubicaciones` | Ver inventario por ubicación (`?bodega_id=`) | Sí |
 | POST | `/ubicaciones` | Crear ubicación en una bodega | Admin |
+| PUT / DELETE | `/ubicaciones/{id}` | Editar o eliminar ubicación (sin stock) | Admin |
+| DELETE | `/productos/{id}` | Eliminar producto (sin stock) | Admin |
+| PUT / DELETE | `/usuarios/{id}` | Editar o eliminar usuario | Admin |
 | POST | `/entradas` | Registrar recepción de mercancía | Sí |
 | POST | `/salidas` | Registrar despacho | Sí |
 | POST | `/transferencias` | Transferir stock entre ubicaciones o bodegas | Sí |
@@ -204,6 +220,7 @@ SmartBin-WMS/
 - **La base de datos como última defensa:** una fila única por ubicación y producto, y `CHECK (cantidad >= 0)`.
 - **Historial inalterable:** cada cambio de stock escribe una fila en `movimientos` dentro de la misma transacción.
 - **Límite de intentos de login:** 5 fallos en 15 minutos bloquean ese usuario desde esa IP.
+- **Eliminaciones seguras:** no se puede eliminar nada que tenga stock, ni dejar el sistema sin administrador. Si a un usuario lo eliminan o le cambian el rol, su sesión deja de servir de inmediato.
 - **Validación de entradas** en la API (cantidades positivas, roles válidos, contraseñas de 8+ caracteres) y **escape de HTML** en los reportes PDF.
 
 ---
